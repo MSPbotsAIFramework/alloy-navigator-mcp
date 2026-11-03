@@ -9,19 +9,48 @@ class as data, not as a fixed enum baked into the connector.
 from __future__ import annotations
 
 import json
-from typing import Callable
+import logging
+import time
+import uuid
+from typing import Any, Awaitable, Callable
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from alloy_mcp.api_client import AlloyClient
-from alloy_mcp.errors import AlloyApiError, error_envelope, map_status_to_error
+from alloy_mcp.errors import AlloyApiError, error_envelope, map_status_to_error, status_to_code
 
 # SOP section 2.5: single tool-call response size cap. Alloy Navigator list
 # endpoints do not themselves truncate, so this is enforced here.
 _MAX_RESPONSE_CHARS = 20_000
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True, idempotentHint=True)
+
+# SOP section 6 / tech design "Non-functional -> Observability": one
+# structured JSON log line per tool call, carrying a request-id for
+# correlation, the (redacted) identifying params, the upstream HTTP status,
+# latency, and -- on failure -- the mapped error code. Never the credential
+# headers (never read here) or a raw response/request body.
+_logger = logging.getLogger("alloy_mcp")
+
+
+def _log_call(
+    request_id: str,
+    tool: str,
+    params: dict[str, Any],
+    status_code: int | None,
+    latency_ms: float,
+    error_code: str | None,
+) -> None:
+    record = {
+        "request_id": request_id,
+        "tool": tool,
+        "params": params,
+        "status": status_code,
+        "latency_ms": round(latency_ms, 1),
+        "error_code": error_code,
+    }
+    _logger.info(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
 
 
 def _dump(payload: dict) -> str:
@@ -50,6 +79,35 @@ def register(mcp: FastMCP, client_factory: Callable[[], AlloyClient | None]) -> 
             raise _NotConfigured()
         return client
 
+    async def _execute(
+        tool: str,
+        params: dict[str, Any],
+        call: Callable[[AlloyClient], Awaitable[Any]],
+    ) -> str:
+        """Run one tool's upstream call and emit its structured log line.
+
+        Centralized here (rather than duplicated per tool) so every tool
+        gets the same logging shape and the same credential/error handling
+        for free -- see the module docstring on `_log_call`.
+        """
+        request_id = uuid.uuid4().hex[:12]
+        start = time.monotonic()
+        try:
+            client = require_client()
+        except _NotConfigured:
+            _log_call(request_id, tool, params, None, (time.monotonic() - start) * 1000, "not_configured")
+            return error_envelope("not_configured", "No Alloy Navigator credentials in request context.", retryable=False)
+
+        try:
+            result = await call(client)
+        except AlloyApiError as exc:
+            error_code = status_to_code(exc.status_code)
+            _log_call(request_id, tool, params, exc.status_code, (time.monotonic() - start) * 1000, error_code)
+            return map_status_to_error(exc.status_code, exc.message)
+
+        _log_call(request_id, tool, params, client.last_status_code, (time.monotonic() - start) * 1000, None)
+        return _dump(result)
+
     @mcp.tool(
         name="alloy_list_objects",
         annotations=_READ_ONLY,
@@ -71,9 +129,9 @@ def register(mcp: FastMCP, client_factory: Callable[[], AlloyClient | None]) -> 
         offset: int = 0,
     ) -> str:
         limit = max(1, min(limit, 200))
-        try:
-            client = require_client()
-            result = await client.list_objects(
+
+        async def call(client: AlloyClient) -> Any:
+            return await client.list_objects(
                 object_class,
                 search_text=search_text,
                 fields=fields,
@@ -81,11 +139,12 @@ def register(mcp: FastMCP, client_factory: Callable[[], AlloyClient | None]) -> 
                 limit=limit,
                 offset=offset,
             )
-        except AlloyApiError as exc:
-            return map_status_to_error(exc.status_code, exc.message)
-        except _NotConfigured:
-            return error_envelope("not_configured", "No Alloy Navigator credentials in request context.", retryable=False)
-        return _dump(result)
+
+        # search_text/fields/sort_asc are free-text and not named in the
+        # tech design's log field list -- only object_class and pagination
+        # are logged (SOP section 6: never a raw request/response body).
+        params = {"object_class": object_class, "limit": limit, "offset": offset}
+        return await _execute("alloy_list_objects", params, call)
 
     @mcp.tool(
         name="alloy_get_object",
@@ -96,14 +155,10 @@ def register(mcp: FastMCP, client_factory: Callable[[], AlloyClient | None]) -> 
         ),
     )
     async def alloy_get_object(oid: str) -> str:
-        try:
-            client = require_client()
-            result = await client.get_object(oid)
-        except AlloyApiError as exc:
-            return map_status_to_error(exc.status_code, exc.message)
-        except _NotConfigured:
-            return error_envelope("not_configured", "No Alloy Navigator credentials in request context.", retryable=False)
-        return _dump(result)
+        async def call(client: AlloyClient) -> Any:
+            return await client.get_object(oid)
+
+        return await _execute("alloy_get_object", {"oid": oid}, call)
 
     @mcp.tool(
         name="alloy_get_object_activities",
@@ -115,14 +170,12 @@ def register(mcp: FastMCP, client_factory: Callable[[], AlloyClient | None]) -> 
     )
     async def alloy_get_object_activities(oid: str, limit: int = 50, offset: int = 0) -> str:
         limit = max(1, min(limit, 200))
-        try:
-            client = require_client()
-            result = await client.get_object_activities(oid, limit=limit, offset=offset)
-        except AlloyApiError as exc:
-            return map_status_to_error(exc.status_code, exc.message)
-        except _NotConfigured:
-            return error_envelope("not_configured", "No Alloy Navigator credentials in request context.", retryable=False)
-        return _dump(result)
+
+        async def call(client: AlloyClient) -> Any:
+            return await client.get_object_activities(oid, limit=limit, offset=offset)
+
+        params = {"oid": oid, "limit": limit, "offset": offset}
+        return await _execute("alloy_get_object_activities", params, call)
 
     @mcp.tool(
         name="alloy_get_dictionary",
@@ -133,14 +186,10 @@ def register(mcp: FastMCP, client_factory: Callable[[], AlloyClient | None]) -> 
         ),
     )
     async def alloy_get_dictionary(dictionary_name: str) -> str:
-        try:
-            client = require_client()
-            result = await client.get_dictionary(dictionary_name)
-        except AlloyApiError as exc:
-            return map_status_to_error(exc.status_code, exc.message)
-        except _NotConfigured:
-            return error_envelope("not_configured", "No Alloy Navigator credentials in request context.", retryable=False)
-        return _dump(result)
+        async def call(client: AlloyClient) -> Any:
+            return await client.get_dictionary(dictionary_name)
+
+        return await _execute("alloy_get_dictionary", {"dictionary_name": dictionary_name}, call)
 
 
 class _NotConfigured(Exception):

@@ -40,22 +40,31 @@ def error_envelope(code: ErrorCode, message: str, *, retryable: bool) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
-def map_status_to_error(status_code: int | None, message: str) -> str:
+def status_to_code(status_code: int | None) -> ErrorCode:
     """Map an Alloy Navigator HTTP status (or None for a transport failure)
     onto the fixed error-code vocabulary. Used for both the OAuth2 token
     endpoint and the object/activities/dictionary endpoints -- Alloy
-    Navigator uses the same HTTP semantics for both.
+    Navigator uses the same HTTP semantics for both. Factored out of
+    `map_status_to_error` so per-request logging (PRD-21267 review round 1)
+    can record the same error code without re-parsing the JSON envelope.
     """
     if status_code in (401, 403):
-        return error_envelope("unauthorized", message, retryable=False)
+        return "unauthorized"
     if status_code == 404:
-        return error_envelope("not_found", message, retryable=False)
+        return "not_found"
     if status_code in (400, 422):
-        return error_envelope("invalid_argument", message, retryable=False)
+        return "invalid_argument"
     if status_code == 429:
-        return error_envelope("rate_limited", message, retryable=True)
+        return "rate_limited"
     if status_code is None or status_code >= 500:
-        return error_envelope("upstream_error", message, retryable=True)
+        return "upstream_error"
     # Any other 4xx we did not anticipate: treat as a client-side argument
     # problem rather than silently inventing a new code.
-    return error_envelope("invalid_argument", message, retryable=False)
+    return "invalid_argument"
+
+
+def map_status_to_error(status_code: int | None, message: str) -> str:
+    """Serialize `status_to_code`'s mapping as the SOP section 4.2 error envelope."""
+    code = status_to_code(status_code)
+    retryable = code in ("rate_limited", "upstream_error")
+    return error_envelope(code, message, retryable=retryable)

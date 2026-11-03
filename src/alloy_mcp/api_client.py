@@ -56,6 +56,11 @@ class AlloyClient:
         # httpx normalizes a trailing slash inconsistently across versions;
         # strip it once here so every endpoint below can join with "/...".
         self._base_url = credentials.base_url.rstrip("/")
+        # Set on a successful response in `_request`; read by the tools layer
+        # for per-call structured logging (SOP section 6). On failure the
+        # status is already on the raised AlloyApiError, so this is only
+        # meaningful after a call that returned normally.
+        self.last_status_code: int | None = None
 
     async def _mint_token(self, http: httpx.AsyncClient) -> str:
         try:
@@ -102,6 +107,7 @@ class AlloyClient:
                         continue
                     if response.status_code >= 400:
                         raise AlloyApiError(response.status_code, self._summarize_error(response))
+                    self.last_status_code = response.status_code
                     return response.json() if response.content else None
 
             assert last_error is not None
