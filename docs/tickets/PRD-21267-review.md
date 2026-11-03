@@ -49,3 +49,26 @@ Verdict: changes requested
 3. [suggestion] retry/backoff comment accuracy on the transport-error fallthrough — not changed this round, same reason as #2.
 
 Verdict after fixes: must-fix #1 addressed; suggestions #2/#3 intentionally left open for a future round or ticket.
+
+## Round 2 · 2026-11-03 · reviewed dev/PRD-21267 @ 7238dc5 (base main @ e3da08a)
+
+Verdict: approved
+
+### Round 1 must-fix re-check
+
+1. [must-fix #1, round 1] Structured per-tool-call logging — **confirmed fixed**, re-verified independently on this host (not just re-reading the round-1 Fixes writeup):
+   - `git diff 42351b3..7238dc5 -- src/` shows exactly the change the Fixes section describes: `_log_call`/`_execute` in `tools/objects.py`, `last_status_code` in `api_client.py`, `status_to_code` factored out in `errors.py`, `logging.basicConfig(...)` in `__main__.py`. No test files changed (tool signatures/params did not change, so `mcp-track.md` §4.3's "tools/params 改了，测试跟着改" bullet does not apply here).
+   - `.venv/bin/pytest -v` on `7238dc5` → **15 passed in 0.29s**, same 15 names as round 1 — no regression.
+   - Re-ran the Chinese-text scan myself (`grep -rnP '[\x{4e00}-\x{9fff}]' --exclude-dir=.git --exclude-dir=.venv --exclude-dir=__pycache__ .`): the only hit is this review file's own round-1 finding text (quotes the SOP's Chinese section title as evidence) — nothing in `src/`, `README.md`, or `tests/`. Matches the claim, not just trusted it.
+   - `sudo docker build -t alloy-navigator-mcp:review2 .` → builds clean. Ran the image (`-p 18901:8080`, the app listens on 8080 not 8000 — confirmed from `Dockerfile`/`uvicorn` output): `GET /health` → 200; `POST /mcp tools/list` with no credential headers → 401 naming all three headers; with all three headers and no `initialize` → 200 with all 4 tools (confirms `stateless_http=True`).
+   - **Independently exercised the new logging end-to-end** (round 1 used an ad-hoc script outside the repo for this; I called the live container instead): `tools/call alloy_list_objects` against an unreachable fake `X-Alloy-Base-Url` with a planted secret value `SUPERSECRETVALUE123` in `X-Alloy-Client-Secret` → container log emitted exactly one line: `{"request_id":"...","tool":"alloy_list_objects","params":{"object_class":"Incidents","limit":50,"offset":0},"status":null,"latency_ms":19.4,"error_code":"upstream_error"}`. `docker logs | grep` for the planted secret value: zero matches. Confirms the log line shape (6 fields), the params redaction (`object_class`/pagination only, no `search_text`/`fields`/`sort_asc`), and that the credential header value never reaches the log, under an actual failing call rather than only the happy path.
+   - README "MSPbots Connector" section re-diffed against `reference/readme-connector-section.md`: byte-identical (confirmed the apparent mismatch in my first diff attempt was my own section-boundary slicing, not a real difference).
+   - `ac.json`: 10/11 cases `pass`, `TC-ALY-011` `untested` with a documented reason (needs a real tenant account) — matches the `[DEV]` stub, and "no vendor test account" is explicitly not a blocker per `mcp-track.md` §3's completion standard.
+
+### New findings this round
+
+4. [suggestion] `src/alloy_mcp/tools/objects.py:101-106` — `_execute`'s inner `try` only catches `AlloyApiError`; any other exception raised inside a tool's `call(client)` (e.g. an unexpected bug, not an upstream HTTP condition) propagates without going through `_log_call`, so that one request-id never appears in the logs despite the module's docstring claiming "every tool gets the same logging shape ... for free". Pre-existing shape (the four tools never caught bare exceptions before round 1 either), not introduced by this round's fix, and no AC exercises this path, so not a must-fix. Consider a bare `except Exception` fallback that logs `error_code="internal_error"` and re-raises, so the observability story in the tech design's "Non-functional" section holds even for bugs, not just mapped vendor errors.
+
+No other issues found; suggestions #2 and #3 from round 1 remain open and unaddressed, as expected (review-rework scope).
+
+Status: frozen @ 7238dc5a6a2c474dd07f613ab9fd976b57226f08
