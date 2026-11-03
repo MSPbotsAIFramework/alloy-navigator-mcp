@@ -1,0 +1,127 @@
+[
+  {
+    "id": "TC-ALY-001",
+    "ac": "AC1",
+    "text": "Given valid credential headers and object_class=\"Incidents\", when alloy_list_objects is called with limit=10, then it returns a JSON array of at most 10 incident objects containing the requested fields.",
+    "type": "auto",
+    "tests": [
+      "tests/test_tools.py::test_list_objects_returns_requested_fields_and_respects_limit"
+    ],
+    "result": "pass",
+    "evidence": "uv run pytest -v (14 passed, 0.27s). tests/test_tools.py::test_list_objects_returns_requested_fields_and_respects_limit PASSED -- mocked GET /api/v2/Incidents returns 10 objects respecting limit=10, fields from vendor response preserved."
+  },
+  {
+    "id": "TC-ALY-002",
+    "ac": "AC1",
+    "text": "Given a search_text that matches nothing, when alloy_list_objects is called, then it returns an empty objects array, not an error.",
+    "type": "auto",
+    "tests": [
+      "tests/test_tools.py::test_list_objects_empty_result_is_not_an_error"
+    ],
+    "result": "pass",
+    "evidence": "uv run pytest -v (14 passed, 0.27s). tests/test_tools.py::test_list_objects_empty_result_is_not_an_error PASSED -- mocked empty vendor response maps to {\"objects\": [], \"has_more\": false}, no error key present."
+  },
+  {
+    "id": "TC-ALY-003",
+    "ac": "AC2",
+    "text": "Given a known oid, when alloy_get_object is called, then it returns that single object's detail fields.",
+    "type": "auto",
+    "tests": [
+      "tests/test_tools.py::test_get_object_returns_single_object_detail"
+    ],
+    "result": "pass",
+    "evidence": "uv run pytest -v (14 passed, 0.27s). tests/test_tools.py::test_get_object_returns_single_object_detail PASSED -- mocked GET /api/v2/object/INC-1 fields returned verbatim."
+  },
+  {
+    "id": "TC-ALY-004",
+    "ac": "AC3",
+    "text": "Given a known oid, when alloy_get_object_activities is called, then it returns that object's activity/history entries in order.",
+    "type": "auto",
+    "tests": [
+      "tests/test_tools.py::test_get_object_activities_returns_history_entries"
+    ],
+    "result": "pass",
+    "evidence": "uv run pytest -v (14 passed, 0.27s). tests/test_tools.py::test_get_object_activities_returns_history_entries PASSED -- mocked GET /api/v2/Activities/INC-1 returns the 2 entries in vendor order."
+  },
+  {
+    "id": "TC-ALY-005",
+    "ac": "AC4",
+    "text": "Given a classification/dictionary name, when alloy_get_dictionary is called, then it returns that classification's code-to-label values.",
+    "type": "auto",
+    "tests": [
+      "tests/test_tools.py::test_get_dictionary_returns_classification_values"
+    ],
+    "result": "pass",
+    "evidence": "uv run pytest -v (14 passed, 0.27s). tests/test_tools.py::test_get_dictionary_returns_classification_values PASSED -- mocked GET /api/v2/Dictionary returns code/label pairs under \"values\"."
+  },
+  {
+    "id": "TC-ALY-006",
+    "ac": "AC5",
+    "text": "Given a /mcp request missing one of the three required credential headers, when any tool is called, then the service returns HTTP 401 naming the missing header(s), and Alloy Navigator is never called.",
+    "type": "auto",
+    "tests": [
+      "tests/test_middleware.py::test_missing_credential_header_returns_401_with_header_names"
+    ],
+    "result": "pass",
+    "evidence": "uv run pytest -v (14 passed, 0.27s). tests/test_middleware.py::test_missing_credential_header_returns_401_with_header_names PASSED (+ test_all_headers_missing_lists_all_three) -- real CredentialMiddleware over httpx.ASGITransport, 401 body names exactly the missing header(s); also verified live against the built Docker image: `curl -s -X POST http://localhost:18181/mcp -d '{...}'` -> 401 {\"error\":\"missing required header(s): X-Alloy-Base-Url, X-Alloy-Client-Id, X-Alloy-Client-Secret\"}."
+  },
+  {
+    "id": "TC-ALY-007",
+    "ac": "AC6",
+    "text": "Given an object_class Alloy Navigator rejects (e.g. an unknown class name), when alloy_list_objects is called, then it returns the structured error envelope with code=\"invalid_argument\", not an unhandled exception.",
+    "type": "auto",
+    "tests": [
+      "tests/test_tools.py::test_list_objects_invalid_object_class_is_invalid_argument"
+    ],
+    "result": "pass",
+    "evidence": "uv run pytest -v (14 passed, 0.27s). tests/test_tools.py::test_list_objects_invalid_object_class_is_invalid_argument PASSED -- mocked 400 from vendor maps to code=invalid_argument, retryable=false."
+  },
+  {
+    "id": "TC-ALY-008",
+    "ac": "AC7",
+    "text": "Given an oid that does not exist, when alloy_get_object is called, then it returns the structured error envelope with code=\"not_found\".",
+    "type": "auto",
+    "tests": [
+      "tests/test_tools.py::test_get_object_unknown_oid_is_not_found"
+    ],
+    "result": "pass",
+    "evidence": "uv run pytest -v (14 passed, 0.27s). tests/test_tools.py::test_get_object_unknown_oid_is_not_found PASSED -- mocked 404 from vendor maps to code=not_found."
+  },
+  {
+    "id": "TC-ALY-009",
+    "ac": "AC8",
+    "text": "Given two concurrent requests carrying two different tenants' credential headers, when both are in flight at the same time, then each outbound call to Alloy Navigator uses only its own request's credentials, never the other tenant's.",
+    "type": "auto",
+    "tests": [
+      "tests/test_middleware.py::test_concurrent_requests_do_not_leak_credentials_across_tenants"
+    ],
+    "result": "pass",
+    "evidence": "uv run pytest -v (14 passed, 0.27s). tests/test_middleware.py::test_concurrent_requests_do_not_leak_credentials_across_tenants PASSED -- two concurrent /mcp requests (tenant-a, tenant-b) through the real CredentialMiddleware with a 50ms interleave point; each request's ContextVar read before and after the interleave matched only its own tenant's client_id, confirming no cross-request leakage via the contextvars-based isolation (server.py's _credentials_var)."
+  },
+  {
+    "id": "TC-ALY-010",
+    "ac": "AC9",
+    "text": "Given Alloy Navigator returns a 5xx or the connection times out, when any tool is called, then it returns the structured error envelope with code=\"upstream_error\" and retryable=true, not an unhandled exception or a hang.",
+    "type": "auto",
+    "tests": [
+      "tests/test_tools.py::test_upstream_5xx_or_timeout_is_upstream_error"
+    ],
+    "result": "pass",
+    "evidence": "uv run pytest -v (14 passed, 0.27s). tests/test_tools.py::test_upstream_5xx_or_timeout_is_upstream_error PASSED (503 case) and test_upstream_timeout_is_upstream_error PASSED (httpx.ConnectTimeout case, extra coverage beyond the AC wording) -- both map to code=upstream_error, retryable=true."
+  },
+  {
+    "id": "TC-ALY-011",
+    "ac": "AC1",
+    "text": "Given a real tenant's Alloy Navigator credentials, when an Agent is asked a representative ITSM question spanning more than one tool (e.g. list open incidents for a computer and show the last 3 activity entries), then it selects and chains the right tools using only their descriptions, and the results match what the tenant's own Alloy Navigator console shows.",
+    "type": "manual",
+    "steps": [
+      "Register a real tenant's X-Alloy-Base-Url / X-Alloy-Client-Id / X-Alloy-Client-Secret against the deployed service",
+      "Open the tenant's Alloy Navigator console and note a handful of real incidents/computers for comparison",
+      "In an Agent session with this connector attached, ask: 'List open incidents for computer <name> and show the last 3 activity entries for the most recent one'",
+      "Observe which tools the Agent calls and compare the returned data to the console"
+    ],
+    "expect": "The Agent calls alloy_list_objects(object_class=\"Incidents\", ...) then alloy_get_object_activities on the right oid, purely from the tool descriptions, and the returned incidents/activities match the tenant's console for the same filter",
+    "result": "untested",
+    "evidence": "needs a real Alloy Navigator vendor account; not available at design/dev time (mcp-track.md 2.5: absence does not block delivery)"
+  }
+]
